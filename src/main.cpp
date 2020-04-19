@@ -213,6 +213,12 @@ int main(int argc, char **argv) {
     }
 
     /*
+        Write a footer to the output file
+        This is neccesary otherwise ffplay says "moov atom not found"
+    */
+    av_write_trailer(out_ctx);
+
+    /*
         Free memory
     */
     avformat_close_input(&in_ctx);
