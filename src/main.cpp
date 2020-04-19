@@ -178,11 +178,11 @@ int main(int argc, char **argv) {
                 ret = avcodec_receive_frame(in_avctx, frame);
                 // if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) die("Got error?");
                 if (ret < 0) break;
-                printf("Successfully decoded packet\n");
+                // printf("Successfully decoded packet\n");
 
                 avcodec_send_frame(out_avctx, frame);
                 if (avcodec_receive_packet(out_avctx, &pkt) == 0) {
-                    printf("Successfully reencoded frame\n");
+                    // printf("Successfully reencoded frame\n");
                     av_interleaved_write_frame(out_ctx, &pkt);
                     av_packet_unref(&pkt);
                 }
@@ -204,8 +204,9 @@ int main(int argc, char **argv) {
             // printf("Video frame\n");
             video_frames++;
         } else {
+            ret = av_interleaved_write_frame(out_ctx, &pkt);
             // avcodec_decode_audio4(in_avctx, frame, &frame_finished, &pkt);
-            printf("Audio frame\n");
+            // printf("Audio frame\n");
             audio_frames++;
         }
 
