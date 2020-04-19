@@ -16,7 +16,6 @@ extern "C" {
     #include <ao/ao.h>
 }
 
-
 void die(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(1);
@@ -30,14 +29,17 @@ int main(int argc, char **argv) {
     AVFormatContext* in_ctx = NULL;
     AVFormatContext* out_ctx = NULL;
 
-    av_register_all();
+    /* 
+        Register stuff
+    */
+    av_register_output_format(out_fmt);
 
     if (avformat_open_input(&in_ctx, file.c_str(), NULL, NULL) != 0) { die("Could not open input file"); }
     if (avformat_find_stream_info(in_ctx, NULL) < 0) { die("Failed to find stream info"); }
     av_dump_format(in_ctx, 0, file.c_str(), 0);
 
     /*
-        Commented out for testing
+        Create the output context
     */
     avformat_alloc_output_context2(&out_ctx, NULL, NULL, OUT_FILE);
     if(!out_ctx) die("Could not create output context");
@@ -90,7 +92,7 @@ int main(int argc, char **argv) {
     AVCodec* in_codec = nullptr;
     AVCodecContext* in_avctx = nullptr;
     for (int i = 0; i < in_ctx->nb_streams; i++) {
-        if (in_ctx->streams[i]->codec->coder_type == AVMEDIA_TYPE_VIDEO) {
+        if (in_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             in_video_stream_index = i;
             in_avctx = in_ctx->streams[i]->codec;
             in_codec = avcodec_find_decoder(in_avctx->codec_id);
@@ -106,9 +108,9 @@ int main(int argc, char **argv) {
     AVCodec* out_codec = nullptr;
     AVCodecContext* out_avctx = nullptr;
     for(int i = 0; i < out_ctx->nb_streams; i++) {
-        if(out_ctx->streams[i]->codec->coder_type == AVMEDIA_TYPE_VIDEO) {
+        if(out_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             out_video_stream_index = i;
-            out_codec = avcodec_find_encoder(out_ctx->streams[i]->codec->codec_id);
+            out_codec = avcodec_find_encoder(out_ctx->streams[i]->codecpar->codec_id);
             out_avctx = avcodec_alloc_context3(out_codec);
 
             out_avctx->height = in_avctx->height;
@@ -133,45 +135,76 @@ int main(int argc, char **argv) {
     uint32_t audio_frames = 0;
     int frame_finished;
     AVPacket pkt;
-    AVFrame *frame = NULL;
+    AVFrame* frame = NULL;
+
     frame = av_frame_alloc();
+    pkt = *av_packet_alloc();
     avcodec_open2(in_avctx, in_codec, NULL);
 
     // Main Loop
     while(1) {
-        int ret = av_read_frame(in_ctx, &pkt);
+        AVStream *in_stream, *out_stream;
         /*
             If ret < 0 then we are either at the end of the file
             Or we encountered an error while reading
         */
+        int ret = av_read_frame(in_ctx, &pkt);
         if(ret < 0) break;
+
+        in_stream = in_ctx->streams[pkt.stream_index];
+        out_stream = out_ctx->streams[pkt.stream_index];
+
+        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
+        pkt.pos = -1;
+
         if(pkt.stream_index == in_video_stream_index) {
             /*
                 Seg Faults if you dont initialize frame with the return value of av_frame_alloc()
+                
             */
-            avcodec_decode_video2(in_avctx, frame, &frame_finished, &pkt);
+            // avcodec_decode_video2(in_avctx, frame, &frame_finished, &pkt);
             
-            if(frame_finished) {
-                // Operate on frame
+            /*
+                Apparently every avcodec_encode/decode* method is deprecated and i need to
+                switch to avcodec_send_packet() and avcodec_recieve_packet()
+                I'll copy over the code from new.cpp
+            */
+            ret = avcodec_send_packet(in_avctx, &pkt);
+            if (ret < 0) die("Error sending a packet for decoding");
 
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(in_avctx, frame);
+                // if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) die("Got error?");
+                if (ret < 0) break;
+                printf("Successfully decoded packet\n");
 
-                /*
-                    Reencode packet and write to file!
-                */
-                int got_packet = 0;
-                AVPacket enc_pkt = { 0 };
-                av_init_packet(&enc_pkt);
-
-                avcodec_encode_video2(out_avctx, &enc_pkt, frame, &got_packet);
-                av_interleaved_write_frame(out_ctx, &enc_pkt);
-            } else {
-                // ???
-                // I'm not sure under what circumstances frame_finished is equal to 0
+                avcodec_send_frame(out_avctx, frame);
+                if (avcodec_receive_packet(out_avctx, &pkt) == 0) {
+                    printf("Successfully reencoded frame\n");
+                    av_interleaved_write_frame(out_ctx, &pkt);
+                    av_packet_unref(&pkt);
+                }
             }
-            printf("Video frame\n");
+//             if(frame_finished) {
+//                 // Operate on frame
+
+
+//                 /*
+//                     Reencode packet and write to file!
+//                 */
+// // 
+//                 avcodec_encode_video2(out_avctx, &pkt, frame, &got_packet);
+//                 av_interleaved_write_frame(out_ctx, &pkt);
+//             } else {
+//                 // ???
+//                 // I'm not sure under what circumstances frame_finished is equal to 0
+//             }
+            // printf("Video frame\n");
             video_frames++;
         } else {
-            avcodec_decode_audio4(in_avctx, frame, &frame_finished, &pkt);
+            // avcodec_decode_audio4(in_avctx, frame, &frame_finished, &pkt);
             printf("Audio frame\n");
             audio_frames++;
         }

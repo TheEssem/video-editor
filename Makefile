@@ -1,6 +1,6 @@
 CC=g++
 LDFLAGS=-lx264 -lswscale -lavutil -lavformat -lavcodec
-SRC=src/$(shell ls src/)
+SRC=src/main.cpp
 
 all: compile clean
 
